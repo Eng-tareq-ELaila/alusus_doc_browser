@@ -1,0 +1,310 @@
+// ============================================================
+// BrowsePage.alusus — صفحة التصفح العامة  GET /
+//
+// تعرض:
+//   - شريط تنقل علوي مع رابط Admin
+//   - حقل بحث فوري (live search)
+//   - قائمة بطاقات للوثائق
+//   - عرض وثيقة مع جدول محتويات جانبي وزر رجوع
+// ============================================================
+
+import "Alusus/WebPlatform";
+use WebPlatform;
+
+
+//--------------------------------------------------------------
+// ألوان واجهة المستخدم المشتركة
+//--------------------------------------------------------------
+
+def C_PRIMARY : String = String("1D4ED8");
+def C_DANGER  : String = String("DC2626");
+def C_SUCCESS : String = String("16A34A");
+def C_BG      : String = String("F1F5F9");
+def C_CARD    : String = String("FFFFFF");
+def C_TEXT    : String = String("1E293B");
+def C_MUTED   : String = String("64748B");
+def C_BORDER  : String = String("E2E8F0");
+
+
+//--------------------------------------------------------------
+// صفحة التصفح الرئيسية
+//--------------------------------------------------------------
+
+@uiEndpoint["/"]
+@title["Doc Browser"]
+func browsePage {
+    Window.instance.style.{
+        padding = Length4.pt(0);
+        margin = Length4.pt(0);
+        background = Background(Color(C_BG.buf));
+        fontFamily = "Tahoma, Arial, sans-serif";
+    };
+
+    // ── عناصر الحالة ──────────────────────────────────────
+
+    def cardList: SrdRef[Box] = Box({}).{
+        style.{
+            display = Display.FLEX;
+            layout = Layout.COLUMN;
+            gap = Length.pt(12);
+        };
+    };
+
+    def tocPanel: SrdRef[Box] = Box({}).{
+        style.{
+            display = Display.NONE;
+            layout = Layout.COLUMN;
+            minWidth = Length.pt(180);
+            maxWidth = Length.pt(200);
+            gap = Length.pt(4);
+        };
+    };
+
+    def docContent: SrdRef[Box] = Box({}).{
+        style.{ display = Display.NONE; flexGrow = 1; };
+    };
+
+    def backBtn: SrdRef[Button] = Button(
+        Text("← Back to list").{ style.fontColor = Color(C_PRIMARY.buf); }
+    ).{
+        style.{
+            background = Background(Color("EFF6FF"));
+            border = Border(1, BorderStyle.SOLID, Color(C_PRIMARY.buf));
+            padding = Length4.pt(7, 14);
+            borderRadius = Length4.pt(6);
+            margin = Length4.pt(0, 0, 14, 0);
+            cursor = Cursor.HAND;
+            display = Display.NONE;
+        };
+        onClick.connect(closure [cardList, tocPanel, docContent, backBtn] (s: ptr[Widget], e: Int) {
+            docContent.style.display = Display.NONE;
+            tocPanel.style.display = Display.NONE;
+            cardList.style.display = Display.FLEX;
+            backBtn.style.display = Display.NONE;
+        });
+    };
+
+    // ── فتح وثيقة وعرض محتواها ────────────────────────────
+
+    def openDoc: closure (String) =
+        closure [cardList, tocPanel, docContent, backBtn] (docId: String)
+    {
+        def req: SafeRequest;
+        req.send(
+            "GET", (String("/api/docs/view?id=") + docId).buf, "", "", 25000,
+            closure [cardList, tocPanel, docContent, backBtn] (resp: Json) {
+                if !resp("ok").getBool() return;
+                def data: Json = resp("data");
+
+                // ── بناء جدول المحتويات ────────────────────
+                tocPanel.removeAllChildren();
+                tocPanel.addChildren(1,
+                    Text("Contents").{
+                        style.{
+                            fontSize = Length.pt(13.0);
+                            fontWeight = FontWeight.BOLD;
+                            fontColor = Color(C_TEXT.buf);
+                            margin = Length4.pt(0, 0, 6, 0);
+                        };
+                    }
+                );
+                def toc: Json = data("toc");
+                def ti: Int = 0;
+                for , ti < toc.getLength(), ti++ {
+                    def entry: Json = toc(ti);
+                    def lvl: Int = entry("level")~cast[Int];
+                    def heading: String = unquote(entry("title").rawValue);
+                    def indent: Int = (lvl - 1) * 12;
+                    tocPanel.addChildren(1,
+                        Text(heading).{
+                            style.{
+                                fontSize = Length.pt(12.0);
+                                fontColor = Color(C_PRIMARY.buf);
+                                margin = Length4.pt(2, 0, 2, indent);
+                                cursor = Cursor.HAND;
+                            };
+                        }
+                    );
+                };
+
+                // ── عرض HTML المُوَلَّد ────────────────────
+                def html: String = unquote(data("html").rawValue);
+                docContent.removeAllChildren();
+                docContent.addChildren(1,
+                    HtmlText(html).{
+                        style.{
+                            background = Background(Color(C_CARD.buf));
+                            padding = Length4.pt(28);
+                            borderRadius = Length4.pt(8);
+                            border = Border(1, BorderStyle.SOLID, Color(C_BORDER.buf));
+                        };
+                    }
+                );
+
+                cardList.style.display = Display.NONE;
+                tocPanel.style.display = Display.FLEX;
+                docContent.style.display = Display.BLOCK;
+                backBtn.style.display = Display.BLOCK;
+            }
+        );
+    };
+
+    // ── عرض نتائج البحث كبطاقات ───────────────────────────
+
+    def renderCards: closure (Json) = closure [cardList, openDoc] (resp: Json) {
+        cardList.removeAllChildren();
+        if !resp("ok").getBool() return;
+        def data: Json = resp("data");
+        def count: Int = data.getLength();
+        if count == 0 {
+            cardList.addChildren(1,
+                Text("No documents found. Ask an admin to load some.").{
+                    style.{ fontColor = Color(C_MUTED.buf); padding = Length4.pt(24); };
+                }
+            );
+            return;
+        };
+        def i: Int = 0;
+        for , i < count, i++ {
+            def item: Json = data(i);
+            def docId:    String = unquote(item("id").rawValue);
+            def docTitle: String = unquote(item("title").rawValue);
+            def docDate:  String = unquote(item("added_at").rawValue);
+
+            def captId: String = docId;
+            def card: SrdRef[Box] = Box({}).{
+                style.{
+                    background = Background(Color(C_CARD.buf));
+                    border = Border(1, BorderStyle.SOLID, Color(C_BORDER.buf));
+                    borderRadius = Length4.pt(8);
+                    padding = Length4.pt(16);
+                    cursor = Cursor.HAND;
+                };
+                style(ConditionState.HOVER).{
+                    background = Background(Color("EFF6FF"));
+                    border = Border(1, BorderStyle.SOLID, Color(C_PRIMARY.buf));
+                };
+                addChildren(2,
+                    Text(docTitle).{
+                        style.{
+                            fontSize = Length.pt(16.0);
+                            fontWeight = FontWeight.BOLD;
+                            fontColor = Color(C_PRIMARY.buf);
+                        };
+                    },
+                    Text(String("📅 ") + docDate).{
+                        style.{ fontSize = Length.pt(12.0); fontColor = Color(C_MUTED.buf); };
+                    }
+                );
+                onClick.connect(closure [captId, openDoc] (s: ptr[Widget], e: Int) {
+                    openDoc(captId);
+                });
+            };
+            cardList.addChildren(1, card);
+        };
+    };
+
+    // ── دالة البحث ────────────────────────────────────────
+
+    def doSearch: closure (String) = closure [renderCards] (kw: String) {
+        def req: SafeRequest;
+        req.send(
+            "GET", (String("/api/docs?q=") + kw).buf, "", "", 10000,
+            closure [renderCards] (resp: Json) { renderCards(resp); }
+        );
+    };
+
+    // ── بناء الصفحة الكاملة ───────────────────────────────
+
+    Window.instance.setView(Box({}).{
+        style.{ display = Display.FLEX; layout = Layout.COLUMN; minHeight = Length.perc(100); };
+        addChildren(3,
+
+            // شريط التنقل العلوي
+            Box({}).{
+                style.{
+                    background = Background(Color(C_PRIMARY.buf));
+                    padding = Length4.pt(0, 20);
+                    display = Display.FLEX;
+                    layout = Layout.ROW;
+                    alignment = Alignment.CENTER;
+                    justifyContent = Justify.BETWEEN;
+                };
+                addChildren(2,
+                    Text("📚 Document Browser").{
+                        style.{
+                            fontSize = Length.pt(20.0);
+                            fontWeight = FontWeight.BOLD;
+                            fontColor = Color("FFFFFF");
+                        };
+                    },
+                    Box({}).{
+                        style.{ display = Display.FLEX; layout = Layout.ROW; gap = Length.pt(18); };
+                        addChildren(1,
+                            HyperLink("/admin", Text("Admin").{
+                                style.fontColor = Color("FFFFFF");
+                            }).{ style.textDecoration = TextDecoration.NONE; }
+                        );
+                    }
+                );
+            },
+
+            // قسم البحث الرئيسي (hero)
+            Box({}).{
+                style.{
+                    background = Background(Color("1E3A8A"));
+                    padding = Length4.pt(30, 20);
+                };
+                addChildren(2,
+                    Text("Browse the Knowledge Base").{
+                        style.{
+                            fontSize = Length.pt(24.0);
+                            fontWeight = FontWeight.BOLD;
+                            fontColor = Color("FFFFFF");
+                            margin = Length4.pt(0, 0, 14, 0);
+                        };
+                    },
+                    Input().{
+                        style.{
+                            background = Background(Color("FFFFFF"));
+                            border = Border(0, BorderStyle.NONE, Color("FFFFFF"));
+                            padding = Length4.pt(10, 16);
+                            borderRadius = Length4.pt(8);
+                            fontSize = Length.pt(15.0);
+                            width = Length.perc(100);
+                        };
+                        placeholder = "Type to search…";
+                        onTextChange.connect(closure [doSearch] (s: ptr[Widget], val: String) {
+                            doSearch(val);
+                        });
+                    }
+                );
+            },
+
+            // منطقة المحتوى الرئيسية
+            Box({}).{
+                style.{
+                    padding = Length4.pt(24, 20);
+                    maxWidth = Length.pt(960);
+                    margin = Length4.pt(0, "auto");
+                    width = Length.perc(100);
+                };
+                addChildren(3,
+                    backBtn,
+                    Box({}).{
+                        style.{
+                            display = Display.FLEX;
+                            layout = Layout.ROW;
+                            gap = Length.pt(20);
+                        };
+                        addChildren(2, tocPanel, docContent);
+                    },
+                    cardList
+                );
+            }
+        );
+    });
+
+    doSearch(String(""));
+    runEventLoop();
+}

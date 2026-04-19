@@ -1,0 +1,36 @@
+// ============================================================
+// Main.alusus — نقطة الدخول الرئيسية
+//
+// يستورد كل الوحدات ويشغّل الخادم على المنفذ 8080
+// ============================================================
+
+import "Srl/Console.alusus";
+import "Srl/String.alusus";
+import "Srl/Array.alusus";
+import "Srl/Memory.alusus";
+import "Srl/StringBuilder.alusus";
+import "Srl/refs.alusus";
+import "closures.alusus";
+import "Build.alusus";
+import "Apm.alusus";
+
+Apm.importFile("Alusus/WebPlatform");
+Apm.importFile("Alusus/Sqlite");
+Apm.importFile("Alusus/Json");
+Apm.importFile("Alusus/MarkdownTranslator");
+Apm.importFile("Alusus/Sle", { "Srl/Net.alusus" });
+
+use Srl;
+use WebPlatform;
+
+// استيراد وحدات المشروع
+import "db/Database.alusus";
+import "core/Core.alusus";
+import "api/Api.alusus";
+import "ui/BrowsePage.alusus";
+import "ui/AdminPage.alusus";
+
+// ── تشغيل التطبيق ─────────────────────────────────────────
+
+initDb();
+WebPlatform.run(8080);

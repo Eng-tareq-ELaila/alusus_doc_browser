@@ -1,0 +1,184 @@
+// ============================================================
+// Core.alusus — وظائف مشتركة ومساعدة
+//
+// تحتوي على:
+//   - JsonHelpers   : بناء ردود JSON وتسلسل صفوف قاعدة البيانات
+//   - RequestHelpers: قراءة body الطلب وتحليل query string
+//   - MarkdownHelpers: استخراج عنوان H1 وبناء جدول المحتويات
+//   - Session       : إدارة جلسة المدير (token بسيط في الذاكرة)
+// ============================================================
+
+import "Srl/String.alusus";
+import "Srl/Array.alusus";
+import "Srl/StringBuilder.alusus";
+import "Alusus/WebPlatform";
+import "Alusus/Sqlite";
+import "Alusus/Json";
+
+use Srl;
+use WebPlatform;
+
+
+//==============================================================
+// JSON Response Helpers
+// يستخدم JsonStringBuilderMixin لضمان الهروب الآمن للنصوص
+//==============================================================
+
+func sendJson(conn: ptr[Http.Connection], status: CharsPtr, body: CharsPtr) {
+    Http.print(conn, "HTTP/1.1 %s\r\n", status);
+    Http.print(conn, "Content-Type: application/json; charset=utf-8\r\n");
+    Http.print(conn, "Cache-Control: no-cache\r\n");
+    Http.print(conn, "Content-Length: %d\r\n\r\n", String.getLength(body));
+    Http.print(conn, body);
+}
+
+// رد ناجح: {"ok":true,"data":<dataJson>}
+func sendOk(conn: ptr[Http.Connection], dataJson: CharsPtr) {
+    def sb: StringBuilder[JsonStringBuilderMixin](512, 512);
+    sb.format("{\"ok\":true,\"data\":%s}", dataJson);
+    sendJson(conn, "200 OK", sb~cast[String].buf);
+}
+
+// رد فاشل: {"ok":false,"message":"..."}
+func sendErr(conn: ptr[Http.Connection], msg: CharsPtr) {
+    def sb: StringBuilder[JsonStringBuilderMixin](256, 0);
+    sb.format("{\"ok\":false,\"message\":%jpc}", msg);
+    sendJson(conn, "400 Bad Request", sb~cast[String].buf);
+}
+
+// تحويل مصفوفة صفوف قاعدة البيانات إلى JSON array
+// الأعمدة المتوقعة: id, title, url, added_at
+func rowsToJson(rows: ref[Array[Sqlite.Record]]): String {
+    def sb: StringBuilder[JsonStringBuilderMixin](4096, 2048);
+    sb.format("[");
+    def i: Int = 0;
+    for , i < rows.getLength(), i++ {
+        if i > 0 sb.format(",");
+        sb.format(
+            "{\"id\":%jpc,\"title\":%jpc,\"url\":%jpc,\"added_at\":%jpc}",
+            rows(i)("id").buf,
+            rows(i)("title").buf,
+            rows(i)("url").buf,
+            rows(i)("added_at").buf
+        );
+    };
+    sb.format("]");
+    return sb~cast[String];
+}
+
+
+//==============================================================
+// Request Helpers
+//==============================================================
+
+// قراءة كامل body الطلب (حتى 64KB)
+func readBody(conn: ptr[Http.Connection]): String {
+    def buf: array[Char, 65536];
+    def n: Int = Http.read(conn, buf~ptr, buf~size - 1);
+    if n < 0 n = 0;
+    buf(n) = 0;
+    return String(buf~ptr, n);
+}
+
+// استخراج قيمة نصية من كائن Json مع إزالة الاقتباسات المحيطة
+func jStr(obj: ref[Json], key: CharsPtr): String {
+    def raw: String = obj(key).rawValue;
+    if raw.getLength() >= 2 && raw.buf~cnt(0) == '"' {
+        return String(raw.buf + 1, raw.getLength() - 2);
+    };
+    return raw;
+}
+
+// استخراج معامل واحد من query string: "q=hello&x=1" → قيمة "q"
+func qsParam(qs: CharsPtr, key: CharsPtr): String {
+    def pairs: Array[String] = String(qs).split("&");
+    def i: Int = 0;
+    for , i < pairs.getLength(), i++ {
+        def kv: Array[String] = pairs(i).split("=");
+        if kv.getLength() >= 2 && kv(0) == String(key) return kv(1);
+    };
+    return String("");
+}
+
+// إزالة الاقتباسات المحيطة بقيمة rawValue من Json
+func unquote(s: String): String {
+    if s.getLength() >= 2 && s.buf~cnt(0) == '"' {
+        return String(s.buf + 1, s.getLength() - 2);
+    };
+    return s;
+}
+
+
+//==============================================================
+// Markdown Helpers
+//==============================================================
+
+// استخراج أول عنوان H1 ("# العنوان") من نص Markdown
+func extractTitle(md: CharsPtr): String {
+    def lines: Array[String] = String(md).split("\n");
+    def i: Int = 0;
+    for , i < lines.getLength(), i++ {
+        def line: String = lines(i);
+        if line.getLength() > 2
+            && line.buf~cnt(0) == '#'
+            && line.buf~cnt(1) == ' '
+            && (line.getLength() < 3 || line.buf~cnt(2) != '#')
+        {
+            // إزالة CR في نهاية السطر إن وُجد
+            def end: Int = line.getLength() - 2;
+            if end > 0 && line.buf~cnt(line.getLength() - 1) == '\r' end--;
+            return String(line.buf + 2, end);
+        };
+    };
+    return String("Untitled");
+}
+
+// بناء JSON array لجدول المحتويات من H1/H2/H3
+// الشكل: [{"level": N, "title": "…"}, …]
+func buildToc(md: CharsPtr): String {
+    def sb: StringBuilder[JsonStringBuilderMixin](1024, 512);
+    sb.format("[");
+    def first: Bool = true;
+    def lines: Array[String] = String(md).split("\n");
+    def i: Int = 0;
+    for , i < lines.getLength(), i++ {
+        def line: String = lines(i);
+        def level: Int = 0;
+        def j: Int = 0;
+        for , j < line.getLength() && line.buf~cnt(j) == '#', j++ level++;
+        if level >= 1 && level <= 3
+            && j < line.getLength()
+            && line.buf~cnt(j) == ' '
+        {
+            def text: String = String(line.buf + j + 1, line.getLength() - j - 1);
+            if !first sb.format(",");
+            sb.format("{\"level\":%d,\"title\":%jpc}", level, text.buf);
+            first = false;
+        };
+    };
+    sb.format("]");
+    return sb~cast[String];
+}
+
+
+//==============================================================
+// Session Management
+// جلسة بسيطة في الذاكرة — token واحد نشط في كل الوقت
+//==============================================================
+
+def ADMIN_USER: CharsPtr = "admin";
+def ADMIN_PASS: CharsPtr = "12345";
+def sessionToken: String;
+
+// إنشاء token جديد بناءً على الوقت الحالي
+func newSession(): String {
+    def sb: StringBuilder[JsonStringBuilderMixin](32, 0);
+    sb.format("tok_%x", System.time()~cast[Int]);
+    sessionToken = sb~cast[String];
+    return sessionToken;
+}
+
+// مسح الجلسة (تسجيل خروج)
+func clearSession() {
+    sessionToken = String("");
+}

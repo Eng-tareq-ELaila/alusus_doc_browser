@@ -1,0 +1,395 @@
+// ============================================================
+// AdminPage.alusus — لوحة المدير  GET /admin
+//
+// تعرض:
+//   - نموذج تسجيل دخول (loginPanel) — مرئي عند البداية
+//   - لوحة الإدارة (adminPanel)   — تظهر بعد تسجيل الدخول
+//       • حقل لتحميل وثيقة Markdown من رابط
+//       • قائمة الوثائق المُحمَّلة مع زر حذف لكل منها
+//       • رابط "Browse" + زر "Logout" في الهيدر
+// ============================================================
+
+import "Alusus/WebPlatform";
+use WebPlatform;
+
+
+@uiEndpoint["/admin"]
+@title["Doc Browser – Admin"]
+func adminPage {
+    Window.instance.style.{
+        padding = Length4.pt(0);
+        margin = Length4.pt(0);
+        background = Background(Color(C_BG.buf));
+        fontFamily = "Tahoma, Arial, sans-serif";
+    };
+
+    def statusMsg: SrdRef[Text] = Text("").{
+        style.{ fontSize = Length.pt(13.0); minHeight = Length.pt(18); margin = Length4.pt(8, 0, 0, 0); };
+    };
+
+    def docList: SrdRef[Box] = Box({}).{
+        style.{ display = Display.FLEX; layout = Layout.COLUMN; gap = Length.pt(10); };
+    };
+
+    // ── عرض رسالة حالة (نجاح/فشل) ────────────────────────
+
+    def showStatus: closure (String, Bool) = closure [statusMsg] (msg: String, ok: Bool) {
+        statusMsg.content = msg;
+        statusMsg.style.fontColor = ok ? Color(C_SUCCESS.buf) : Color(C_DANGER.buf);
+    };
+
+    // ── تحديث قائمة الوثائق من API ────────────────────────
+
+    def refreshList: closure () = closure [docList, showStatus] () {
+        def req: SafeRequest;
+        req.send("GET", "/api/docs", "", "", 10000,
+            closure [docList, showStatus, refreshList] (resp: Json) {
+                if !resp("ok").getBool() return;
+                docList.removeAllChildren();
+                def data: Json = resp("data");
+                def count: Int = data.getLength();
+                if count == 0 {
+                    docList.addChildren(1,
+                        Text("No documents loaded yet.").{
+                            style.{ fontColor = Color(C_MUTED.buf); padding = Length4.pt(16); };
+                        }
+                    );
+                    return;
+                };
+                def i: Int = 0;
+                for , i < count, i++ {
+                    def item: Json = data(i);
+                    def docId:    String = unquote(item("id").rawValue);
+                    def docTitle: String = unquote(item("title").rawValue);
+                    def docDate:  String = unquote(item("added_at").rawValue);
+
+                    def captId: String = docId;
+                    def row: SrdRef[Box] = Box({}).{
+                        style.{
+                            background = Background(Color(C_CARD.buf));
+                            border = Border(1, BorderStyle.SOLID, Color(C_BORDER.buf));
+                            borderRadius = Length4.pt(8);
+                            padding = Length4.pt(12, 16);
+                            display = Display.FLEX;
+                            layout = Layout.ROW;
+                            alignment = Alignment.CENTER;
+                            justifyContent = Justify.BETWEEN;
+                        };
+                        addChildren(2,
+                            Box({}).{
+                                addChildren(2,
+                                    Text(docTitle).{
+                                        style.{
+                                            fontSize = Length.pt(15.0);
+                                            fontWeight = FontWeight.BOLD;
+                                            fontColor = Color(C_TEXT.buf);
+                                        };
+                                    },
+                                    Text(docDate).{
+                                        style.{ fontSize = Length.pt(12.0); fontColor = Color(C_MUTED.buf); };
+                                    }
+                                );
+                            },
+                            Button(Text("🗑 Delete").{ style.fontColor = Color("FFFFFF"); }).{
+                                style.{
+                                    background = Background(Color(C_DANGER.buf));
+                                    border = Border(0, BorderStyle.NONE, Color("FFFFFF"));
+                                    padding = Length4.pt(7, 14);
+                                    borderRadius = Length4.pt(6);
+                                    cursor = Cursor.HAND;
+                                    fontSize = Length.pt(13.0);
+                                };
+                                onClick.connect(closure [captId, refreshList, showStatus] (s: ptr[Widget], e: Int) {
+                                    def req: SafeRequest;
+                                    def sb: StringBuilder[JsonStringBuilderMixin](128, 0);
+                                    sb.format("{\"id\":%jpc}", captId.buf);
+                                    req.send("DELETE", "/api/docs", "", sb~cast[String].buf, 10000,
+                                        closure [refreshList, showStatus] (resp: Json) {
+                                            if resp("ok").getBool() {
+                                                showStatus(String("Deleted successfully. ✅"), true);
+                                                refreshList();
+                                            } else {
+                                                showStatus(String("Delete failed. ❌"), false);
+                                            };
+                                        }
+                                    );
+                                });
+                            }
+                        );
+                    };
+                    docList.addChildren(1, row);
+                };
+            }
+        );
+    };
+
+    // ── نموذج تسجيل الدخول ────────────────────────────────
+
+    def loginPanel: SrdRef[Box] = Box({}).{
+        style.{
+            display = Display.FLEX;
+            layout = Layout.COLUMN;
+            alignment = Alignment.CENTER;
+            justifyContent = Justify.CENTER;
+            minHeight = Length.perc(100);
+        };
+        addChildren(1,
+            Box({}).{
+                style.{
+                    background = Background(Color(C_CARD.buf));
+                    padding = Length4.pt(40);
+                    borderRadius = Length4.pt(12);
+                    boxShadow = "0 4px 24px rgba(0,0,0,0.10)";
+                    width = Length.pt(340);
+                };
+                addChildren(5,
+                    Text("🔐 Admin Login").{
+                        style.{
+                            fontSize = Length.pt(22.0);
+                            fontWeight = FontWeight.BOLD;
+                            fontColor = Color(C_TEXT.buf);
+                            margin = Length4.pt(0, 0, 20, 0);
+                        };
+                    },
+                    Input().{
+                        style.{
+                            background = Background(Color(C_BG.buf));
+                            border = Border(1, BorderStyle.SOLID, Color(C_BORDER.buf));
+                            padding = Length4.pt(10, 14);
+                            borderRadius = Length4.pt(6);
+                            fontSize = Length.pt(15.0);
+                            width = Length.perc(100);
+                            margin = Length4.pt(0, 0, 10, 0);
+                        };
+                        placeholder = "Username";
+                        elementId = "fUser";
+                    },
+                    Input().{
+                        style.{
+                            background = Background(Color(C_BG.buf));
+                            border = Border(1, BorderStyle.SOLID, Color(C_BORDER.buf));
+                            padding = Length4.pt(10, 14);
+                            borderRadius = Length4.pt(6);
+                            fontSize = Length.pt(15.0);
+                            width = Length.perc(100);
+                            margin = Length4.pt(0, 0, 14, 0);
+                        };
+                        placeholder = "Password";
+                        inputType = "password";
+                        elementId = "fPass";
+                    },
+                    statusMsg,
+                    Button(Text("Login →").{ style.fontColor = Color("FFFFFF"); }).{
+                        style.{
+                            background = Background(Color(C_PRIMARY.buf));
+                            border = Border(0, BorderStyle.NONE, Color("FFFFFF"));
+                            padding = Length4.pt(11, 0);
+                            borderRadius = Length4.pt(6);
+                            fontSize = Length.pt(16.0);
+                            fontWeight = FontWeight.BOLD;
+                            cursor = Cursor.HAND;
+                            width = Length.perc(100);
+                        };
+                        onClick.connect(
+                            closure [loginPanel, refreshList, showStatus] (s: ptr[Widget], e: Int)
+                        {
+                            def u: String = getElementValue("fUser");
+                            def p: String = getElementValue("fPass");
+                            def req: SafeRequest;
+                            def sb: StringBuilder[JsonStringBuilderMixin](128, 0);
+                            sb.format("{\"username\":%jpc,\"password\":%jpc}", u.buf, p.buf);
+                            req.send("POST", "/api/login", "", sb~cast[String].buf, 8000,
+                                closure [loginPanel, refreshList, showStatus] (resp: Json) {
+                                    if resp("ok").getBool() {
+                                        loginPanel.style.display = Display.NONE;
+                                        refreshList();
+                                    } else {
+                                        showStatus(String("Invalid credentials. ❌"), false);
+                                    };
+                                }
+                            );
+                        });
+                    }
+                );
+            }
+        );
+    };
+
+    // ── لوحة الإدارة (تظهر بعد تسجيل الدخول) ─────────────
+
+    def adminPanel: SrdRef[Box] = Box({}).{
+        style.{ display = Display.NONE; layout = Layout.COLUMN; minHeight = Length.perc(100); };
+        addChildren(3,
+
+            // هيدر لوحة الإدارة
+            Box({}).{
+                style.{
+                    background = Background(Color(C_PRIMARY.buf));
+                    padding = Length4.pt(0, 20);
+                    display = Display.FLEX;
+                    layout = Layout.ROW;
+                    alignment = Alignment.CENTER;
+                    justifyContent = Justify.BETWEEN;
+                };
+                addChildren(2,
+                    Text("⚙️ Admin Panel").{
+                        style.{
+                            fontSize = Length.pt(20.0);
+                            fontWeight = FontWeight.BOLD;
+                            fontColor = Color("FFFFFF");
+                        };
+                    },
+                    Box({}).{
+                        style.{ display = Display.FLEX; layout = Layout.ROW; gap = Length.pt(14); };
+                        addChildren(2,
+                            HyperLink("/", Text("Browse").{ style.fontColor = Color("FFFFFF"); }).{
+                                style.textDecoration = TextDecoration.NONE;
+                            },
+                            Button(Text("Logout").{ style.fontColor = Color(C_PRIMARY.buf); }).{
+                                style.{
+                                    background = Background(Color("FFFFFF"));
+                                    border = Border(0, BorderStyle.NONE, Color("FFFFFF"));
+                                    padding = Length4.pt(6, 14);
+                                    borderRadius = Length4.pt(6);
+                                    cursor = Cursor.HAND;
+                                };
+                                onClick.connect(
+                                    closure [loginPanel, adminPanel] (s: ptr[Widget], e: Int)
+                                {
+                                    def req: SafeRequest;
+                                    req.send("POST", "/api/logout", "", "{}", 5000,
+                                        closure [loginPanel, adminPanel] (resp: Json) {
+                                            adminPanel.style.display = Display.NONE;
+                                            loginPanel.style.display = Display.FLEX;
+                                        }
+                                    );
+                                });
+                            }
+                        );
+                    }
+                );
+            },
+
+            // المحتوى الرئيسي
+            Box({}).{
+                style.{
+                    padding = Length4.pt(28, 20);
+                    maxWidth = Length.pt(900);
+                    margin = Length4.pt(0, "auto");
+                    width = Length.perc(100);
+                };
+                addChildren(3,
+
+                    // بطاقة تحميل وثيقة جديدة
+                    Box({}).{
+                        style.{
+                            background = Background(Color(C_CARD.buf));
+                            padding = Length4.pt(24);
+                            borderRadius = Length4.pt(10);
+                            border = Border(1, BorderStyle.SOLID, Color(C_BORDER.buf));
+                            margin = Length4.pt(0, 0, 28, 0);
+                        };
+                        addChildren(4,
+                            Text("📥 Load a New Document").{
+                                style.{
+                                    fontSize = Length.pt(17.0);
+                                    fontWeight = FontWeight.BOLD;
+                                    fontColor = Color(C_TEXT.buf);
+                                    margin = Length4.pt(0, 0, 6, 0);
+                                };
+                            },
+                            Text("Paste a direct link to a public Markdown (.md) file.").{
+                                style.{ fontSize = Length.pt(13.0); fontColor = Color(C_MUTED.buf); margin = Length4.pt(0, 0, 12, 0); };
+                            },
+                            Box({}).{
+                                style.{ display = Display.FLEX; layout = Layout.ROW; gap = Length.pt(8); };
+                                addChildren(2,
+                                    Input().{
+                                        style.{
+                                            background = Background(Color(C_BG.buf));
+                                            border = Border(1, BorderStyle.SOLID, Color(C_BORDER.buf));
+                                            padding = Length4.pt(10, 14);
+                                            borderRadius = Length4.pt(6);
+                                            fontSize = Length.pt(14.0);
+                                            width = Length.perc(78);
+                                        };
+                                        placeholder = "https://raw.githubusercontent.com/…/README.md";
+                                        elementId = "fUrl";
+                                    },
+                                    Button(Text("⬇ Load").{ style.fontColor = Color("FFFFFF"); }).{
+                                        style.{
+                                            background = Background(Color(C_SUCCESS.buf));
+                                            border = Border(0, BorderStyle.NONE, Color("FFFFFF"));
+                                            padding = Length4.pt(10, 20);
+                                            borderRadius = Length4.pt(6);
+                                            cursor = Cursor.HAND;
+                                            fontSize = Length.pt(14.0);
+                                            fontWeight = FontWeight.BOLD;
+                                        };
+                                        onClick.connect(closure [refreshList, showStatus] (s: ptr[Widget], e: Int) {
+                                            def url: String = getElementValue("fUrl");
+                                            if url.getLength() == 0 {
+                                                showStatus(String("Please enter a URL. ❌"), false);
+                                                return;
+                                            };
+                                            def req: SafeRequest;
+                                            def sb: StringBuilder[JsonStringBuilderMixin](512, 0);
+                                            sb.format("{\"url\":%jpc}", url.buf);
+                                            req.send("POST", "/api/docs", "", sb~cast[String].buf, 25000,
+                                                closure [refreshList, showStatus] (resp: Json) {
+                                                    if resp("ok").getBool() {
+                                                        showStatus(String("Document loaded! ✅"), true);
+                                                        refreshList();
+                                                    } else {
+                                                        def errRaw: String = unquote(resp("message").rawValue);
+                                                        showStatus(String("Error: ") + errRaw, false);
+                                                    };
+                                                }
+                                            );
+                                        });
+                                    }
+                                );
+                            },
+                            statusMsg
+                        );
+                    },
+
+                    Text("📋 Loaded Documents").{
+                        style.{
+                            fontSize = Length.pt(17.0);
+                            fontWeight = FontWeight.BOLD;
+                            fontColor = Color(C_TEXT.buf);
+                            margin = Length4.pt(0, 0, 12, 0);
+                        };
+                    },
+                    docList
+                );
+            },
+
+            // فوتر الصفحة
+            Box({}).{
+                style.{
+                    padding = Length4.pt(14, 20);
+                    background = Background(Color(C_CARD.buf));
+                    borderTop = Border(1, BorderStyle.SOLID, Color(C_BORDER.buf));
+                };
+                addChildren(1,
+                    Text("Document Browser — Built with Alusus Programming Language").{
+                        style.{ fontSize = Length.pt(12.0); fontColor = Color(C_MUTED.buf); };
+                    }
+                );
+            }
+        );
+    };
+
+    loginPanel.onClick.connect(
+        closure [loginPanel, adminPanel] (s: ptr[Widget], e: Int) {}
+    );
+
+    Window.instance.setView(Box({}).{
+        style.{ display = Display.FLEX; layout = Layout.COLUMN; minHeight = Length.perc(100); };
+        addChildren(2, loginPanel, adminPanel);
+    });
+
+    runEventLoop();
+}

@@ -1,0 +1,162 @@
+// ============================================================
+// Api.alusus — نقاط نهاية الـ Backend (REST API)
+//
+// المسارات:
+//   POST   /api/login       — تسجيل دخول المدير
+//   POST   /api/logout      — تسجيل خروج
+//   POST   /api/docs        — تحميل وثيقة Markdown من رابط
+//   DELETE /api/docs        — حذف وثيقة
+//   GET    /api/docs        — بحث / جلب كل الوثائق
+//   GET    /api/docs/view   — جلب وثيقة واحدة مُحوَّلة لـ HTML
+// ============================================================
+
+import "Alusus/WebPlatform";
+import "Alusus/Json";
+import "Alusus/MarkdownTranslator";
+import "Alusus/Sle", { "Srl/Net.alusus" };
+
+use WebPlatform;
+
+
+//--------------------------------------------------------------
+// POST /api/login
+// الطلب : {"username":"admin","password":"12345"}
+// الرد   : {"ok":true,"data":"tok_XXXX"} أو خطأ 400
+//--------------------------------------------------------------
+
+@beEndpoint["POST", "/api/login"]
+func apiLogin(conn: ptr[Http.Connection]) {
+    def body: String = readBody(conn);
+    def j: Json = Json(body.buf);
+    def user: String = jStr(j, "username");
+    def pass: String = jStr(j, "password");
+    if user == String(ADMIN_USER) && pass == String(ADMIN_PASS) {
+        def tok: String = newSession();
+        def sb: StringBuilder[JsonStringBuilderMixin](64, 0);
+        sb.format("%jpc", tok.buf);
+        sendOk(conn, sb~cast[String].buf);
+    } else {
+        sendErr(conn, "Invalid username or password.");
+    };
+}
+
+
+//--------------------------------------------------------------
+// POST /api/logout
+// الرد: {"ok":true,"data":true}
+//--------------------------------------------------------------
+
+@beEndpoint["POST", "/api/logout"]
+func apiLogout(conn: ptr[Http.Connection]) {
+    clearSession();
+    sendOk(conn, "true");
+}
+
+
+//--------------------------------------------------------------
+// POST /api/docs
+// الطلب : {"url":"https://…/README.md"}
+// السلوك : يُنزّل الملف عبر HTTP GET، يستخرج العنوان،
+//           يحفظ أو يُحدّث السجل في SQLite
+// الرد   : {"ok":true,"data":{"id":"…","title":"…"}}
+//--------------------------------------------------------------
+
+@beEndpoint["POST", "/api/docs"]
+func apiAddDoc(conn: ptr[Http.Connection]) {
+    def body: String = readBody(conn);
+    def j: Json = Json(body.buf);
+    def url: String = jStr(j, "url");
+    if url.getLength() == 0 { sendErr(conn, "url is required"); return; };
+
+    // تنزيل الملف البعيد
+    def req: Sle.Net.Request(url);
+    req.verbose = false;
+    if !req.get() {
+        sendErr(conn, "Failed to download file from the given URL.");
+        return;
+    };
+
+    def content: String = req.responseBody;
+    def title: String = extractTitle(content.buf);
+    upsertDoc(url.buf, title.buf, url.buf, content.buf);
+
+    def sb: StringBuilder[JsonStringBuilderMixin](256, 0);
+    sb.format("{\"id\":%jpc,\"title\":%jpc}", url.buf, title.buf);
+    sendOk(conn, sb~cast[String].buf);
+}
+
+
+//--------------------------------------------------------------
+// DELETE /api/docs
+// الطلب : {"id":"…"}
+// الرد   : {"ok":true,"data":true}
+//--------------------------------------------------------------
+
+@beEndpoint["DELETE", "/api/docs"]
+func apiDeleteDoc(conn: ptr[Http.Connection]) {
+    def body: String = readBody(conn);
+    def j: Json = Json(body.buf);
+    def id: String = jStr(j, "id");
+    if id.getLength() == 0 { sendErr(conn, "id is required"); return; };
+    deleteDoc(id.buf);
+    sendOk(conn, "true");
+}
+
+
+//--------------------------------------------------------------
+// GET /api/docs?q=<keyword>
+// q فارغة = جلب كل الوثائق مرتبة بالأحدث
+// q بها كلمة = بحث في العنوان والمحتوى
+// الرد: {"ok":true,"data":[{id,title,url,added_at},…]}
+//--------------------------------------------------------------
+
+@beEndpoint["GET", "/api/docs"]
+func apiSearchDocs(conn: ptr[Http.Connection]) {
+    def ri: ptr[Http.RequestInfo] = Http.getRequestInfo(conn);
+    def qs: String = ri~cnt.queryString != 0 ? String(ri~cnt.queryString) : String("");
+    def kw: String = qsParam(qs.buf, "q");
+    def rows: Array[Sqlite.Record] = searchDocs(kw.buf);
+    def json: String = rowsToJson(rows);
+    sendOk(conn, json.buf);
+}
+
+
+//--------------------------------------------------------------
+// GET /api/docs/view?id=<docId>
+// يجلب الوثيقة من SQLite، يحوّل Markdown إلى HTML،
+// يبني جدول المحتويات
+// الرد: {"ok":true,"data":{id,title,url,added_at,toc,html}}
+//--------------------------------------------------------------
+
+@beEndpoint["GET", "/api/docs/view"]
+func apiViewDoc(conn: ptr[Http.Connection]) {
+    def ri: ptr[Http.RequestInfo] = Http.getRequestInfo(conn);
+    def qs: String = ri~cnt.queryString != 0 ? String(ri~cnt.queryString) : String("");
+    def id: String = qsParam(qs.buf, "id");
+    if id.getLength() == 0 { sendErr(conn, "id is required"); return; };
+
+    def rows: Array[Sqlite.Record] = fetchDoc(id.buf);
+    if rows.getLength() == 0 { sendErr(conn, "Document not found."); return; };
+
+    def row: Sqlite.Record = rows(0);
+    def content: String = row("content");
+
+    // تحويل Markdown → HTML
+    def translator: MarkdownTranslator;
+    def html: String = translator.translate(content);
+
+    def toc: String = buildToc(content.buf);
+
+    def sb: StringBuilder[JsonStringBuilderMixin](8192, 4096);
+    sb.format(
+        "{\"id\":%jpc,\"title\":%jpc,\"url\":%jpc"
+        ",\"added_at\":%jpc,\"toc\":%s,\"html\":%jpc}",
+        row("id").buf,
+        row("title").buf,
+        row("url").buf,
+        row("added_at").buf,
+        toc.buf,
+        html.buf
+    );
+    sendOk(conn, sb~cast[String].buf);
+}

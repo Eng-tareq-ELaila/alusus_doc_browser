@@ -1,0 +1,117 @@
+// ============================================================
+// Database.alusus — طبقة قاعدة البيانات
+//
+// مسؤولة عن:
+//   - تهيئة قاعدة بيانات SQLite (docs.db)
+//   - إنشاء جدول documents إذا لم يكن موجوداً
+//   - عمليات CRUD: إضافة، حذف، بحث، جلب وثيقة
+// ============================================================
+
+import "Srl/Console.alusus";
+import "Srl/String.alusus";
+import "Srl/Array.alusus";
+import "Alusus/Sqlite";
+
+use Srl;
+
+
+//--------------------------------------------------------------
+// متغير عالمي: كائن قاعدة البيانات
+//--------------------------------------------------------------
+
+def db: Sqlite.Db;
+
+
+//--------------------------------------------------------------
+// تهيئة قاعدة البيانات وإنشاء الجدول
+//--------------------------------------------------------------
+
+func initDb() {
+    db = "docs.db";
+    db.exec(
+        "CREATE TABLE IF NOT EXISTS documents ("
+        "  id       TEXT PRIMARY KEY,"   // الرابط URL يُستخدم كمعرّف فريد
+        "  title    TEXT NOT NULL,"
+        "  url      TEXT NOT NULL,"
+        "  content  TEXT NOT NULL,"
+        "  added_at TEXT NOT NULL"
+        ")"
+    );
+    Console.print("Database initialised.\n");
+}
+
+
+//--------------------------------------------------------------
+// sqlEsc — هروب اقتباسات SQL لمنع Injection
+//--------------------------------------------------------------
+
+func sqlEsc(s: CharsPtr): String {
+    def in: String = String(s);
+    def out: String;
+    def i: Int = 0;
+    for , i < in.getLength(), i++ {
+        if in.buf~cnt(i) == '\'' { out.add('\''); out.add('\''); }
+        else out.add(in.buf~cnt(i));
+    };
+    return out;
+}
+
+
+//--------------------------------------------------------------
+// upsertDoc — إضافة أو تحديث وثيقة
+//--------------------------------------------------------------
+
+func upsertDoc(id: CharsPtr, title: CharsPtr, url: CharsPtr, content: CharsPtr) {
+    def sql: String =
+        String("INSERT OR REPLACE INTO documents VALUES ('")
+        + sqlEsc(id)      + String("','")
+        + sqlEsc(title)   + String("','")
+        + sqlEsc(url)     + String("','")
+        + sqlEsc(content) + String("',datetime('now'))");
+    db.exec(sql.buf);
+}
+
+
+//--------------------------------------------------------------
+// deleteDoc — حذف وثيقة بالمعرّف
+//--------------------------------------------------------------
+
+func deleteDoc(id: CharsPtr) {
+    def sql: String =
+        String("DELETE FROM documents WHERE id='") + sqlEsc(id) + String("'");
+    db.exec(sql.buf);
+}
+
+
+//--------------------------------------------------------------
+// searchDocs — بحث بالكلمة المفتاحية (أو جلب الكل إذا فارغة)
+//   يُعيد: id, title, url, added_at (بدون content لتقليل الحمل)
+//--------------------------------------------------------------
+
+func searchDocs(keyword: CharsPtr): Array[Sqlite.Record] {
+    def kw: String = String(keyword);
+    def sql: String;
+    if kw.getLength() == 0 {
+        sql = String("SELECT id,title,url,added_at FROM documents ORDER BY added_at DESC");
+    } else {
+        def pat: String = String("%") + sqlEsc(kw.buf) + String("%");
+        sql = String(
+            "SELECT id,title,url,added_at FROM documents"
+            " WHERE title LIKE '")   + pat + String("'"
+            " OR content LIKE '")    + pat + String("'"
+            " ORDER BY added_at DESC");
+    };
+    return db.exec(sql.buf);
+}
+
+
+//--------------------------------------------------------------
+// fetchDoc — جلب وثيقة كاملة مع المحتوى
+//--------------------------------------------------------------
+
+func fetchDoc(id: CharsPtr): Array[Sqlite.Record] {
+    def sql: String =
+        String("SELECT id,title,url,content,added_at FROM documents WHERE id='")
+        + sqlEsc(id) + String("'");
+    return db.exec(sql.buf);
+}
